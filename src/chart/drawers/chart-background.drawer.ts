@@ -1,0 +1,87 @@
+import { ChartAreaTheme, FullChartConfig } from '../chart.config';
+import { CanvasModel } from '../model/canvas.model';
+import { getDPR } from '../utils/device/device-pixel-ratio.utils';
+import { floor } from '../utils/math.utils';
+import { deepEqual } from '../utils/object.utils';
+import { Drawer } from './drawing-manager';
+
+export class BackgroundDrawer implements Drawer {
+	constructor(
+		private canvasModel: CanvasModel,
+		private config: FullChartConfig,
+		private drawPredicate: () => boolean = () => true,
+	) {}
+
+	// we need to save previous state to avoid unnecessary redraws
+	private prevState: Partial<ChartAreaTheme> = {};
+
+	draw(): void {
+		if (this.drawPredicate() || !deepEqual(this.config.colors.chartAreaTheme, this.prevState)) {
+			this.canvasModel.clear();
+			const ctx = this.canvasModel.ctx;
+			if (this.config.colors.chartAreaTheme.backgroundMode === 'gradient') {
+				const grd = ctx.createLinearGradient(
+					0,
+					0 + this.canvasModel.height / 2,
+					this.canvasModel.width,
+					0 + this.canvasModel.height / 2,
+				);
+				grd.addColorStop(0, this.config.colors.chartAreaTheme.backgroundGradientTopColor);
+				grd.addColorStop(1, this.config.colors.chartAreaTheme.backgroundGradientBottomColor);
+				ctx.fillStyle = grd;
+			} else {
+				ctx.fillStyle = this.config.colors.chartAreaTheme.backgroundColor;
+			}
+			ctx.fillRect(0, 0, this.canvasModel.width, this.canvasModel.height);
+		}
+		// save prev state
+		this.prevState = { ...this.config.colors.chartAreaTheme };
+	}
+
+	getCanvasIds(): Array<string> {
+		return [this.canvasModel.canvasId];
+	}
+}
+
+// this function in used in case when
+// some entity can overlap with another chart entity, so we need to hide the another entity
+// it has very (!!!) poor perfomance, use it carefully
+export const redrawBackgroundArea = (
+	backgroundCtx: CanvasRenderingContext2D,
+	ctx: CanvasRenderingContext2D,
+	x: number,
+	y: number,
+	width: number,
+	height: number,
+	opacity?: number,
+) => {
+	const dpr = getDPR();
+	const backgroundCoords = [x * dpr, y * dpr, width * dpr, height * dpr] as const;
+	let imageData = backgroundCtx.getImageData(...backgroundCoords);
+	if (opacity !== undefined) {
+		// convert rgba to rgb for black background
+		//		Target.R = (Source.A * Source.R)
+		//		Target.G = (Source.A * Source.G)
+		//		Target.B = (Source.A * Source.B)
+		const alpha = imageData.data[3] / 255;
+		if (alpha === 1) {
+			// fast path
+			for (let i = 3; i < imageData.data.length; i += 4) {
+				imageData.data[i] = floor(imageData.data[i] * opacity);
+			}
+		} else {
+			for (let i = 0; i < imageData.data.length; i++) {
+				const v = imageData.data[i];
+				imageData.data[i] = i % 4 === 3 ? floor(v * opacity) : floor(alpha * v);
+			}
+		}
+		imageData = new ImageData(
+			// i % 4 === 3 - this condition is for alpha channel
+			imageData.data,
+			imageData.width,
+			imageData.height,
+			{ colorSpace: imageData.colorSpace },
+		);
+	}
+	ctx.putImageData(imageData, backgroundCoords[0], backgroundCoords[1]);
+};

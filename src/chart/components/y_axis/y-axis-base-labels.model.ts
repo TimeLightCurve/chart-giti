@@ -1,0 +1,62 @@
+import { merge } from 'rxjs';
+import { filter, map, tap } from 'rxjs/operators';
+import { CanvasBoundsContainer, CanvasElement } from '../../canvas/canvas-bounds-container';
+import { ChartBaseElement } from '../../model/chart-base-element';
+import { ScaleModel } from '../../model/scale.model';
+import { isDiffersBy } from '../../utils/math.utils';
+import { animationFrameThrottledPrior } from '../../utils/performance/request-animation-frame-throttle.utils';
+import { uuid } from '../../utils/uuid.utils';
+import { NumericAxisLabel, NumericAxisLabelsGenerator } from '../labels_generator/numeric-axis-labels.generator';
+
+// TODO rework, make this the source of Y labels for main chart
+export class YAxisBaseLabelsModel extends ChartBaseElement {
+	public labels: Array<NumericAxisLabel> = [];
+	private prevYAxisHeight = 0;
+	private animFrameId = `anim_cache_${uuid()}`;
+
+	constructor(
+		private scale: ScaleModel,
+		private labelsGenerator: NumericAxisLabelsGenerator,
+		private canvasBoundsContainer: CanvasBoundsContainer,
+		private paneUUID: string,
+		private extentIdx: number,
+	) {
+		super();
+	}
+
+	/**
+	 * This method is used to activate the component. It calls the parent's doActivate method and subscribes to the merge of two observables:
+	 * - this.scale.yChanged
+	 * - this.canvasBoundsContainer.observeBoundsChanged
+	 * The merge of these two observables is used to update the labels of the component when either the y-axis scale model changes or the canvas bounds change.
+	 * If the height of the canvas bounds changes by more than 1.5 times the previous height, the labels cache is invalidated and the previous y-axis height is updated.
+	 */
+	protected doActivate() {
+		super.doActivate();
+		this.addRxSubscription(
+			merge(
+				this.scale.yChanged,
+				this.canvasBoundsContainer
+					.observeBoundsChanged(CanvasElement.PANE_UUID_Y_AXIS(this.paneUUID, this.extentIdx))
+					.pipe(
+						map(bounds => bounds.height),
+						// do not recalculate height every time bounds is changed, recalculate only if it differs by 1.5 times
+						filter(height => isDiffersBy(height, this.prevYAxisHeight, 1.5)),
+						tap(height => {
+							this.labelsGenerator.labelsCache.invalidate();
+							this.prevYAxisHeight = height;
+						}),
+					),
+			).subscribe(() => this.updateLabels()),
+		);
+	}
+
+	/**
+	 * Updates the labels of the chart's y-axis by generating new numeric labels using the yAxisLabelsGenerator object.
+	 * Then, it calls the updateYAxisWidth method to update the width of the y-axis.
+	 */
+	public updateLabels() {
+		this.labels = this.labelsGenerator.generateNumericLabels();
+		animationFrameThrottledPrior(this.animFrameId, () => this.canvasBoundsContainer.updateYAxisWidths());
+	}
+}
